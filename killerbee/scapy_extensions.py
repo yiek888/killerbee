@@ -4,7 +4,8 @@ DEFAULT_KB_DEVICE = None
 from scapy.config import conf
 setattr(conf, 'killerbee_channel', DEFAULT_KB_CHANNEL)
 setattr(conf, 'killerbee_device', DEFAULT_KB_DEVICE)
-setattr(conf, 'killerbee_nkey', None)
+#setattr(conf, 'killerbee_nkey', None)
+setattr(conf, 'killerbee_nkey', '\x8a\x1c\x79\xa2\x85\x1e\x3c\xd2\xcb\x80\x8b\x54\x10\xf4\xa8\x72')
 from scapy.base_classes import SetGen
 from scapy.packet import Gen, Raw
 from scapy.all import *
@@ -419,7 +420,9 @@ def kbdecrypt(pkt, key = None, verbose = None):
     pkt = pkt.copy()   #this is hack to fix the below line
     pkt.nwk_seclevel=5 #the issue appears to be when this is set
 
-    #mic = struct.unpack(">I", f['mic'])
+    # Parse the payload as ciphertext || MIC, where MIC is 4 bytes
+    pkt.mic = pkt.getlayer(ZigbeeSecurityHeader).data[-4:]
+    pkt.data = pkt.getlayer(ZigbeeSecurityHeader).data[:-4]
     mic = pkt.mic
 
     f = pkt.getlayer(ZigbeeSecurityHeader).fields
@@ -427,15 +430,7 @@ def kbdecrypt(pkt, key = None, verbose = None):
 
     sec_ctrl_byte = str(pkt.getlayer(ZigbeeSecurityHeader))[0]
 
-    # Bug fix thanks to cutaway (https://code.google.com/p/killerbee/issues/detail?id=25):
-    #nonce = struct.pack('L',f['ext_source'])+struct.pack('I',f['fc']) + sec_ctrl_byte
     nonce = struct.pack('L',f['source'])+struct.pack('I',f['fc']) + sec_ctrl_byte
-
-    #nonce = "" # build the nonce
-    #nonce += struct.pack(">Q", f['ext_source'])
-    #nonce += struct.pack(">I", f['fc'])
-    #fc = (f['reserved1'] << 6) | (f['extended_nonce'] << 5) | (f['key_type'] << 3) | f['reserved2']
-    #nonce += chr(fc | 0x05)
 
     if verbose > 2:
         print "Decrypt Details:"
@@ -444,19 +439,18 @@ def kbdecrypt(pkt, key = None, verbose = None):
         print "\tMic:            " + mic.encode('hex')
         print "\tEncrypted Data: " + encrypted.encode('hex')
     
-    crop_size = 4 + 2 + len(pkt.getlayer(ZigbeeSecurityHeader).fields['data'])  # the size of all the zigbee crap, minus the length of the encrypted data, mic and FCS
+    crop_size = 4 + len(pkt.getlayer(ZigbeeSecurityHeader).fields['data'])  # the size of all the zigbee crap, minus the length of the encrypted data, mic
 
-    # the Security Control Field flags have to be adjusted before this is calculated, so we store their original values so we can reset them later
-    #reserved2 = pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2']
-    #pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2'] = (pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2'] | 0x05)
     zigbeeData = pkt.getlayer(ZigbeeNWK).do_build()
     zigbeeData = zigbeeData[:-crop_size]
-    #pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2'] = reserved2
     
+    # zigbeeData = octet string a = NwkHeader || AuxiliaryHeader
+    # encrypted  = octet string c = Payload
     (payload, micCheck) = zigbee_crypt.decrypt_ccm(key, nonce, mic, encrypted, zigbeeData)
 
     if verbose > 2:
         print "\tDecrypted Data: " + payload.encode('hex')
+        print "\tmicCheck:       " + str(micCheck)
 
     frametype = pkt.getlayer(ZigbeeNWK).fields['frametype']
     if frametype == 0:
@@ -470,6 +464,71 @@ def kbdecrypt(pkt, key = None, verbose = None):
     #if micCheck == 1: return (payload, True)
     #else:             return (payload, False)
 
+@conf.commands.register
+def kbencrypt(pkt, data, key = None, verbose = None):
+    """Encrypt Zigbee frames using AES CCM* with 32-bit MIC"""
+    if verbose is None:
+        verbose = conf.verb
+    if key == None:
+        if conf.killerbee_nkey == None:
+            log_killerbee.error("Cannot find decryption key. (Set conf.killerbee_nkey)")
+            return None
+        key = conf.killerbee_nkey
+    if len(key) != 16:
+        log_killerbee.error("Invalid encryption key, must be a 16 byte string.")
+        return None
+    elif not pkt.haslayer(ZigbeeSecurityHeader) or not pkt.haslayer(ZigbeeNWK):
+        log_killerbee.error("Cannot encrypt frame without a ZigbeeSecurityHeader.")
+        return None
+    try:
+        import zigbee_crypt
+    except ImportError:
+        log_killerbee.error("Could not import zigbee_crypt extension, cryptographic functionality is not available.")
+        return None
+
+    pkt = pkt.copy()
+    pkt.nwk_seclevel=5 #the issue appears to be when this is set
+
+    f = pkt.getlayer(ZigbeeSecurityHeader).fields
+    f['data'] = ''  # explicitly clear it out, this should go without say
+    pkt.mic = ''    # Clear out MIC
+    
+    if isinstance(data, Packet):
+        decrypted = data.do_build()
+    else:
+        decrypted = data
+
+    sec_ctrl_byte = str(pkt.getlayer(ZigbeeSecurityHeader))[0]
+
+    nonce = struct.pack('L',f['source'])+struct.pack('I',f['fc']) + sec_ctrl_byte
+
+    if verbose > 2:
+        print "Encrypt Details:"
+        print "\tKey:            " + key.encode('hex')
+        print "\tNonce:          " + nonce.encode('hex')
+        print "\tDecrypted Data: " + decrypted.encode('hex')
+        
+    # the Security Control Field flags have to be adjusted before this is calculated, so we store their original values so we can reset them later
+    zigbeeData = pkt.getlayer(ZigbeeNWK).do_build()
+    
+    # zigbeeData = octet string a = NwkHeader || AuxiliaryHeader
+    # decrypted  = octet string m = Payload
+    (payload, mic) = zigbee_crypt.encrypt_ccm(key, nonce, 4, decrypted, zigbeeData)
+
+    if verbose > 2:
+        print "\tEncrypted Data: " + payload.encode('hex')
+        print "\tMic:            " + str(mic).encode('hex')
+    
+    # Set pkt's values to reflect the encrypted ones to it's ready to be sent
+    f['data'] = payload
+    f['mic'] = mic
+
+    # 4.3.1.1 Security Processing of Outgoing Frames - Step 8
+    # Overwrite network security level field with '000'
+    f['nwk_seclevel'] = 0
+    return pkt
+
+'''
 @conf.commands.register
 def kbencrypt(pkt, data, key = None, verbose = None):
     """Encrypt Zigbee frames using AES CCM* with 32-bit MIC"""
@@ -531,4 +590,4 @@ def kbencrypt(pkt, data, key = None, verbose = None):
     f['data'] = payload
     f['mic'] = struct.unpack(">I", mic)[0]
     return pkt
-
+'''
