@@ -4,8 +4,8 @@ DEFAULT_KB_DEVICE = None
 from scapy.config import conf
 setattr(conf, 'killerbee_channel', DEFAULT_KB_CHANNEL)
 setattr(conf, 'killerbee_device', DEFAULT_KB_DEVICE)
-#setattr(conf, 'killerbee_nkey', None)
-setattr(conf, 'killerbee_nkey', '\x8a\x1c\x79\xa2\x85\x1e\x3c\xd2\xcb\x80\x8b\x54\x10\xf4\xa8\x72')
+setattr(conf, 'killerbee_nkey', None)
+#setattr(conf, 'killerbee_nkey', '\x8a\x1c\x79\xa2\x85\x1e\x3c\xd2\xcb\x80\x8b\x54\x10\xf4\xa8\x72')
 from scapy.base_classes import SetGen
 from scapy.packet import Gen, Raw
 from scapy.all import *
@@ -528,66 +528,3 @@ def kbencrypt(pkt, data, key = None, verbose = None):
     f['nwk_seclevel'] = 0
     return pkt
 
-'''
-@conf.commands.register
-def kbencrypt(pkt, data, key = None, verbose = None):
-    """Encrypt Zigbee frames using AES CCM* with 32-bit MIC"""
-    if verbose is None:
-        verbose = conf.verb
-    if key == None:
-        if conf.killerbee_nkey == None:
-            log_killerbee.error("Cannot find decryption key. (Set conf.killerbee_nkey)")
-            return None
-        key = conf.killerbee_nkey
-    if len(key) != 16:
-        log_killerbee.error("Invalid encryption key, must be a 16 byte string.")
-        return None
-    elif not pkt.haslayer(ZigbeeSecurityHeader) or not pkt.haslayer(ZigbeeNWK):
-        log_killerbee.error("Cannot encrypt frame without a ZigbeeSecurityHeader.")
-        return None
-    try:
-        import zigbee_crypt
-    except ImportError:
-        log_killerbee.error("Could not import zigbee_crypt extension, cryptographic functionality is not available.")
-        return None
-
-    f = pkt.getlayer(ZigbeeSecurityHeader).fields
-    f['data'] = ''  # explicitly clear it out, this should go without say
-    
-    if isinstance(data, Packet):
-        decrypted = data.do_build()
-    else:
-        decrypted = data
-
-    nonce = ""  # build the nonce
-    nonce += struct.pack(">Q", f['source'])
-    nonce += struct.pack(">I", f['fc'])
-    fc = (f['reserved1'] << 6) | (f['extended_nonce'] << 5) | (f['key_type'] << 3) | f['reserved2']
-    nonce += chr(fc | 0x05)
-
-    if verbose > 2:
-        print "Encrypt Details:"
-        print "\tKey:            " + key.encode('hex')
-        print "\tNonce:          " + nonce.encode('hex')
-        print "\tDecrypted Data: " + decrypted.encode('hex')
-        
-    crop_size = 4 + 2 # the size of all the zigbee crap, minus the length of the mic and FCS
-    
-    # the Security Control Field flags have to be adjusted before this is calculated, so we store their original values so we can reset them later
-    reserved2 = pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2']
-    pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2'] = (pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2'] | 0x05)
-    zigbeeData = pkt.getlayer(ZigbeeNWK).do_build()
-    zigbeeData = zigbeeData[:-crop_size]
-    pkt.getlayer(ZigbeeSecurityHeader).fields['reserved2'] = reserved2
-    
-    (payload, mic) = zigbee_crypt.encrypt_ccm(key, nonce, 4, decrypted, zigbeeData)
-
-    if verbose > 2:
-        print "\tEncrypted Data: " + payload.encode('hex')
-        print "\tMic:            " + mic.encode('hex')
-    
-    # Set pkt's values to reflect the encrypted ones to it's ready to be sent
-    f['data'] = payload
-    f['mic'] = struct.unpack(">I", mic)[0]
-    return pkt
-'''

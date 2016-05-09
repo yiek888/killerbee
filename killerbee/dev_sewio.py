@@ -21,6 +21,8 @@ from struct import unpack
 from datetime import datetime, timedelta
 from kbutils import KBCapabilities, makeFCS, isIpAddr, KBInterfaceError
 
+from opensniffer import *
+
 DEFAULT_IP = "10.10.10.2"   #IP address of the sniffer
 DEFAULT_GW = "10.10.10.1"   #IP address of the default gateway
 DEFAULT_UDP = 17754         #"Remote UDP Port"
@@ -50,6 +52,15 @@ def ntp_to_system_time(secs, msecs):
 
 def getFirmwareVersion(ip):
     try:
+        sniffer = OpenSniffer('10.10.10.2')
+        return sniffer.FW
+    except:
+        "Opensniffer failed"
+        return None
+
+'''
+def getFirmwareVersion(ip):
+    try:
         html = urllib2.urlopen("http://{0}/".format(ip))
         fw = re.search(r'Firmware version ([0-9.]+)', html.read())
         if fw is not None:
@@ -57,11 +68,18 @@ def getFirmwareVersion(ip):
     except Exception as e:
         print("Unable to connect to IP {0} (error: {1}).".format(ip, e))
     return None
+'''
 
 def getMacAddr(ip):
-    '''
-    Returns a string for the MAC address of the sniffer.
-    '''
+    try:
+        sniffer = OpenSniffer('10.10.10.2')
+        return sniffer.MAC
+    except:
+        "Opensniffer failed"
+        return None
+
+'''
+def getMacAddr(ip):
     try:
         html = urllib2.urlopen("http://{0}/".format(ip))
         # Yup, we're going to have to steal the status out of a JavaScript variable
@@ -73,6 +91,7 @@ def getMacAddr(ip):
     except Exception as e:
         print("Unable to connect to IP {0} (error: {1}).".format(ip, e))
     return None
+'''
 
 def isSewio(dev):
     return ( isIpAddr(dev) and getFirmwareVersion(dev) != None )
@@ -105,13 +124,15 @@ class SEWIO:
         if self.__revision_num not in TESTED_FW_VERS:
             print("Warning: Firmware revision {0} reported by the sniffer is not currently supported. Errors may occur and dev_sewio.py may need updating.".format(self.__revision_num))
 
-        self.handle = socket(AF_INET, SOCK_DGRAM)
+        self.handle = socket.socket(AF_INET, SOCK_DGRAM)
         self.handle.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         self.handle.bind((self.udp_recv_ip, self.udp_recv_port))
 
         self.__stream_open = False
         self.capabilities = KBCapabilities()
         self.__set_capabilities()
+
+        self.sniffer = OpenSniffer('10.10.10.2')
         
     def close(self):
         '''Actually close the receiving UDP socket.'''
@@ -133,6 +154,7 @@ class SEWIO:
         self.capabilities.setcapab(KBCapabilities.SETCHAN, True)
         self.capabilities.setcapab(KBCapabilities.FREQ_2400, True)
         self.capabilities.setcapab(KBCapabilities.FREQ_900, True)
+        self.capabilities.setcapab(KBCapabilities.INJECT, True)
         return
 
     # KillerBee expects the driver to implement this function
@@ -274,7 +296,7 @@ class SEWIO:
             curChannel = self.__sniffer_channel()
             if channel != curChannel:
                 self.modulation = self.__get_default_modulation(channel)
-                print("Setting to channel {0}, modulation {1}.".format(channel, self.modulation))
+                #print("Setting to channel {0}, modulation {1}.".format(channel, self.modulation))
                 # Examples captured in fw v0.5 sniffing:
                 #   channel 6, 250 compliant: http://10.10.10.2/settings.cgi?chn=6&modul=c&rxsens=0
                 #   channel 12, 250 compliant: http://10.10.10.2/settings.cgi?chn=12&modul=0&rxsens=0
@@ -294,6 +316,26 @@ class SEWIO:
         Not implemented.
         '''
         self.capabilities.require(KBCapabilities.INJECT)
+
+        def channelToBand(channel):
+            return 'chn={}&modul=0'.format(channel)
+
+        if len(packet) < 1:
+            raise Exception('Empty packet')
+        if len(packet) > 125:                   # 127 - 2 to accommodate FCS
+            raise Exception('Packet too long')
+
+        if channel is None:
+            channel = self._channel
+        else:
+            if channel < 11 or 26 < channel:
+                raise Exception('Invalid Channel') 
+
+        repeat = count
+        payload = packet
+        rv = self.sniffer.injectBytes(channelToBand(channel), repeat, payload.encode('hex'))
+        if rv == 0:
+            raise Exception('Sniffer failed to inject.')
 
     @staticmethod
     def __parse_zep_v2(data):
@@ -388,9 +430,9 @@ class SEWIO:
                 continue
             # Dissect the UDP packet
             (frame, ch, validcrc, rssi, lqival, recdtime) = self.__parse_zep_v2(data)
-            print "Valid CRC", validcrc, "LQI", lqival, "RSSI", rssi
             if frame == None or (ch is not None and ch != self._channel):
                 #TODO this maybe should be an error condition, instead of ignored?
+                print "Valid CRC", validcrc, "LQI", lqival, "RSSI", rssi
                 print("ZEP parsing issue (bytes length={0}, channel={1}).".format(len(frame) if frame is not None else None, ch))
                 continue
             break
