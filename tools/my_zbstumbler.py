@@ -32,7 +32,9 @@ class GpsPoller(threading.Thread):
     def run(self):
         try:
             while self.running:
-                self.current_value = self.session.next()
+                report = self.session.next()
+                if report['class'] == 'TPV':
+                    self.current_value = report
         except StopIteration:
             pass
 
@@ -77,11 +79,18 @@ def display_details(routerdata):
 
     if args.gps:
         # Get current GPS location.
-        loc = gpsp.get_current_value()
-        
+        report = gpsp.get_current_value()
+        if report != None:
+            lat = report['lat']
+            lon = report['lon']
+            time = report['time']
+            print '\tGPS: ({},{})\t\tTime: {}'.format(lat, lon, time)
 
     if args.csvfile is not None:
-        csvfile.write("0x%02X%02X,0x%02X%02X,%s,%s,%s,%d\n"%(ord(spanid[0]), ord(spanid[1]), ord(source[0]), ord(source[1]), extpanidstr, stackprofilestr, stackverstr, channel))
+        if args.gps == None:
+            csvfile.write("0x%02X%02X,0x%02X%02X,%s,%s,%s,%d\n"%(ord(spanid[0]), ord(spanid[1]), ord(source[0]), ord(source[1]), extpanidstr, stackprofilestr, stackverstr, channel))
+        else:
+            csvfile.write("0x%02X%02X,0x%02X%02X,%s,%s,%s,%d,%f,%f,%s\n"%(ord(spanid[0]), ord(spanid[1]), ord(source[0]), ord(source[1]), extpanidstr, stackprofilestr, stackverstr, channel, lat, lon, time))
 
 def response_handler(stumbled, packet, channel):
     global args
@@ -158,7 +167,10 @@ if __name__ == '__main__':
             csvfile = open(args.csvfile, 'w')
         except Exception as e:
             print("Issue opening CSV output file: {0}.".format(e))
-        csvfile.write("panid,source,extpanid,stackprofile,stackversion,channel\n")
+        if args.gps == None:
+            csvfile.write("panid,source,extpanid,stackprofile,stackversion,channel\n")
+        else:
+            csvfile.write("panid,source,extpanid,stackprofile,stackversion,channel,lat,lon,time\n")
 
     if args.gps:
         gpsp = GpsPoller()
